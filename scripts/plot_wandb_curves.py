@@ -30,52 +30,68 @@ RUNS = {
     },
 }
 
-METRICS = {
-    "train/mean_reward": "train/mean_reward",
-    "eval/mean_reward": "test/mean_reward",
-}
+X_AXIS = "train/global_step"
+TRAIN_METRIC = "train/mean_reward"
+EVAL_METRIC = "eval/mean_reward"
+EVAL_LABEL = "test/mean_reward"
 
 
-def fetch_history(run_path: str) -> pd.DataFrame:
-    api = wandb.Api()
-    run = api.run(run_path)
-    keys = list(METRICS.keys()) + ["_step"]
-    history = run.history(keys=keys, pandas=True, samples=5000)
+def fetch_metric_history(run, metric: str, *, samples: int) -> pd.DataFrame:
+    """Fetch one metric at a time so W&B does not merge sparse series."""
+    history = run.history(
+        keys=[metric, X_AXIS],
+        pandas=True,
+        samples=samples,
+        x_axis=X_AXIS,
+    )
     if history.empty:
-        raise RuntimeError(f"No history for {run_path}")
-    history = history.sort_values("_step").drop_duplicates(subset="_step", keep="last")
-    history = history.rename(columns={"eval/mean_reward": "test/mean_reward"})
-    return history, run
+        return history
+    history = history.sort_values(X_AXIS).drop_duplicates(subset=X_AXIS, keep="last")
+    return history[[X_AXIS, metric]].dropna(subset=[metric])
+
+
+def fetch_run_histories(run, *, samples: int) -> dict[str, pd.DataFrame]:
+    train = fetch_metric_history(run, TRAIN_METRIC, samples=samples)
+    eval_df = fetch_metric_history(run, EVAL_METRIC, samples=samples)
+    if not eval_df.empty:
+        eval_df = eval_df.rename(columns={EVAL_METRIC: EVAL_LABEL})
+    return {"train": train, "eval": eval_df}
 
 
 def plot_combined(histories: dict, out_dir: Path) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.5), sharex=False)
 
     panel_specs = [
-        ("train/mean_reward", "Train mean reward"),
-        ("test/mean_reward", "Test mean reward"),
+        (TRAIN_METRIC, "Train mean reward"),
+        (EVAL_LABEL, "Test mean reward"),
     ]
 
     max_step = max(
-        payload["history"]["_step"].max() for payload in histories.values()
+        max(
+            (payload["train"][X_AXIS].max() if not payload["train"].empty else 0),
+            (payload["eval"][X_AXIS].max() if not payload["eval"].empty else 0),
+        )
+        for payload in histories.values()
     )
 
     for ax, (metric_key, title) in zip(axes, panel_specs):
         for name, payload in histories.items():
-            df = payload["history"]
-            if metric_key not in df.columns:
+            source = payload["train"] if metric_key == TRAIN_METRIC else payload["eval"]
+            if source.empty or metric_key not in source.columns:
                 continue
-            series = df[["_step", metric_key]].dropna()
+            series = source[[X_AXIS, metric_key]].dropna()
             ax.plot(
-                series["_step"],
+                series[X_AXIS],
                 series[metric_key],
                 label=payload["label"],
                 color=RUNS[name]["color"],
-                linewidth=1.6,
-                alpha=0.9,
+                linewidth=1.2 if metric_key == TRAIN_METRIC else 1.8,
+                alpha=0.85,
+                marker="o" if metric_key == EVAL_LABEL else None,
+                markersize=3 if metric_key == EVAL_LABEL else 0,
             )
         ax.set_title(title)
-        ax.set_xlabel("Environment step")
+        ax.set_xlabel("Environment step (train/global_step)")
         ax.set_ylabel("Mean reward")
         ax.grid(True, alpha=0.3, linestyle="--")
         ax.legend(loc="best", frameon=True, fontsize=9)
@@ -95,23 +111,24 @@ def plot_combined(histories: dict, out_dir: Path) -> None:
 def plot_individual(name: str, payload: dict, out_dir: Path) -> Path:
     fig, axes = plt.subplots(1, 2, figsize=(12, 4.2))
     meta = RUNS[name]
-    df = payload["history"]
 
     panel_specs = [
-        ("train/mean_reward", "Train mean reward"),
-        ("test/mean_reward", "Test mean reward"),
+        (payload["train"], TRAIN_METRIC, "Train mean reward", False),
+        (payload["eval"], EVAL_LABEL, "Test mean reward", True),
     ]
 
-    for ax, (metric_key, title) in zip(axes, panel_specs):
-        series = df[["_step", metric_key]].dropna()
+    for ax, (df, metric_key, title, use_markers) in zip(axes, panel_specs):
+        series = df[[X_AXIS, metric_key]].dropna()
         ax.plot(
-            series["_step"],
+            series[X_AXIS],
             series[metric_key],
             color=meta["color"],
-            linewidth=1.8,
+            linewidth=1.2 if not use_markers else 1.8,
+            marker="o" if use_markers else None,
+            markersize=3 if use_markers else 0,
         )
         ax.set_title(title)
-        ax.set_xlabel("Environment step")
+        ax.set_xlabel("Environment step (train/global_step)")
         ax.set_ylabel("Mean reward")
         ax.grid(True, alpha=0.3, linestyle="--")
 
@@ -125,6 +142,23 @@ def plot_individual(name: str, payload: dict, out_dir: Path) -> Path:
     return out_path
 
 
+def save_csv(name: str, payload: dict, out_dir: Path) -> None:
+    train = payload["train"].rename(columns={TRAIN_METRIC: "train/mean_reward"})
+    eval_df = payload["eval"].rename(columns={EVAL_LABEL: "test/mean_reward"})
+    merged = pd.merge(
+        train,
+        eval_df,
+        on=X_AXIS,
+        how="outer",
+    ).sort_values(X_AXIS)
+    csv_path = out_dir / f"pgfs_{name}_metrics.csv"
+    merged.to_csv(csv_path, index=False)
+    print(
+        f"Wrote {csv_path} "
+        f"(train={len(train)}, test={len(eval_df)}, merged={len(merged)})"
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -132,25 +166,36 @@ def main() -> None:
         type=Path,
         default=Path(__file__).resolve().parents[1] / "figures",
     )
+    parser.add_argument(
+        "--samples",
+        type=int,
+        default=5000,
+        help="Max points per series from W&B history API (train is downsampled).",
+    )
     args = parser.parse_args()
     args.out_dir.mkdir(parents=True, exist_ok=True)
 
     histories = {}
+    api = wandb.Api()
     for name, meta in RUNS.items():
-        history, run = fetch_history(meta["path"])
+        run = api.run(meta["path"])
+        payload = fetch_run_histories(run, samples=args.samples)
         histories[name] = {
-            "history": history,
+            **payload,
             "run": run,
             "label": meta["label"],
         }
-        print(
-            f"{name}: run={run.name}, id={run.id}, config reward={run.config.get('reward', '?')}, "
-            f"steps={history['_step'].max():.0f}"
+        max_step = max(
+            payload["train"][X_AXIS].max() if not payload["train"].empty else 0,
+            payload["eval"][X_AXIS].max() if not payload["eval"].empty else 0,
         )
-        csv_path = args.out_dir / f"pgfs_{name}_metrics.csv"
-        history.to_csv(csv_path, index=False)
-        print(f"Wrote {csv_path}")
-        plot_individual(name, histories[name], args.out_dir)
+        print(
+            f"{name}: run={run.name}, id={run.id}, reward={run.config.get('reward', '?')}, "
+            f"train_pts={len(payload['train'])}, test_pts={len(payload['eval'])}, "
+            f"max_step={max_step:.0f}"
+        )
+        save_csv(name, payload, args.out_dir)
+        plot_individual(name, payload, args.out_dir)
 
     plot_combined(histories, args.out_dir)
 
