@@ -1,6 +1,6 @@
 # PGFS — Policy Gradient on Feasible Syntheses
 
-Standalone reproduction of **Policy Gradient on Feasible Syntheses (PGFS)** for **bimolecular** reaction-based molecular design, following the model setup in [Pereira et al., 2021](https://arxiv.org/pdf/2004.12485) (§4.3, Algorithm 1, Figure 2).
+Standalone reproduction of **Policy Gradient on Feasible Syntheses (PGFS)** for **bimolecular** reaction-based molecular design, following the model setup in [Sai et al., 2020](https://arxiv.org/pdf/2004.12485) (§4.3, Algorithm 1, Figure 2).
 
 
 ---
@@ -187,28 +187,8 @@ pip install -e .
 | PyYAML | Config loading |
 | Weights & Biases | Metrics + run tracking |
 
----
-
-## Citation
-
-If you use this code, please cite the original PGFS paper:
-
-```bibtex
-@article{pereira2021pgfs,
-  title={Policy Gradient on Feasible Syntheses},
-  author={Pereira, Jo{\~a}o and others},
-  journal={arXiv preprint arXiv:2004.12485},
-  year={2021}
-}
-```
-
-Paper: [https://arxiv.org/pdf/2004.12485](https://arxiv.org/pdf/2004.12485)
 
 ---
-
-## Relation to GenMolRL
-
-This tree is a **snapshot/extract** of `genmolrl/algorithms/td3/` inside the broader GenMolRL project (which also hosts PPO, GFlowNet-style methods, and search baselines). Changes here are independent and safe to share without pulling in the full framework.
 
 ## License
 
