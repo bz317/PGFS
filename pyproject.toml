@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pgfs"
+version = "0.1.0"
+description = "Policy Gradient on Feasible Syntheses (Pereira et al., 2021) — bimolecular reproduction"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "torch>=2.0",
+  "numpy>=1.24",
+  "gymnasium>=0.29",
+  "PyYAML>=6.0",
+  "rdkit>=2023.3.1",
+  "faiss-cpu>=1.7.4",
+  "wandb>=0.16",
+]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["pgfs*"]
+
+[project.scripts]
+pgfs-train = "pgfs.scripts.train:main"

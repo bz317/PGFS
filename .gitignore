@@ -1,0 +1,16 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+dist/
+build/
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+wandb/
+runs/
+logs/
+*.log
+.env
+wandb_api_key.txt
+.DS_Store

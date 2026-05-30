@@ -1,0 +1,540 @@
+"""Custom PGFS TD3 training entry point."""
+
+from __future__ import annotations
+
+import os
+import random
+import re
+from pathlib import Path
+
+import numpy as np
+import torch
+
+import wandb
+from pgfs.algorithms.common import env_kwargs, init_wandb, set_seed
+from pgfs.algorithms.td3.constants import TD3_UNI_DISCRETE_ACTION_DESIGN
+from pgfs.algorithms.td3.agent import TD3Agent
+from pgfs.algorithms.td3.knn import KNNWrapper
+from pgfs.algorithms.td3.mask_kind import td3_template_mask_kind
+from pgfs.algorithms.td3.random_selector import NoValidActionError, select_random_action
+from pgfs.algorithms.td3.replay_buffer import ReplayBuffer
+from pgfs.config import project_root, resolve_path
+from pgfs.logging.wandb_metrics import define_ppo_compatible_metrics
+from pgfs.registry import ENV_ID, register_envs
+
+import gymnasium as gym  # noqa: E402
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+_TD3_CHECKPOINT_RE = re.compile(r"^checkpoint_(\d+)\.tar$")
+
+
+def global_step_from_td3_checkpoint(path: Path | str) -> int:
+    """Parse ``checkpoint_<N>.tar`` or read ``steps_done`` from a TD3 save file."""
+    name = Path(path).name
+    match = _TD3_CHECKPOINT_RE.fullmatch(name)
+    if match:
+        return int(match.group(1))
+    try:
+        checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    except TypeError:
+        checkpoint = torch.load(path, map_location="cpu")
+    if isinstance(checkpoint, dict) and "steps_done" in checkpoint:
+        return int(checkpoint["steps_done"])
+    raise ValueError(
+        f"Cannot infer steps_done from checkpoint name {name!r}; "
+        "expected checkpoint_<N>.tar or set training.resume_global_step explicitly."
+    )
+
+
+def _td3_fp_dim(env) -> int:
+    """Width of the state (R(1)) observation fingerprint."""
+    base = getattr(env.unwrapped, "base_obs_dim", None)
+    if base is not None:
+        return int(base)
+    return int(env.unwrapped.observation_space.shape[0])
+
+
+def _td3_r2_vec_dim(env) -> int:
+    if getattr(env.unwrapped, "action_design", "") == TD3_UNI_DISCRETE_ACTION_DESIGN:
+        return 0
+    r2_dim = getattr(env.unwrapped, "r2_representation_dim", None)
+    if r2_dim is not None:
+        return int(r2_dim)
+    return _td3_fp_dim(env)
+
+
+def _make_td3_env(config: dict, *, eval_env: bool = False):
+    register_envs()
+    kwargs = env_kwargs(config, eval_env=eval_env)
+    kwargs["algorithm_family"] = "td3_pgfs"
+    # Append the per-step action mask to the observation, matching PPO/A2C.
+    # Without this, the TD3 actor's f_net only sees the morgan fingerprint and
+    # has to *infer* which templates are feasible from the fingerprint alone;
+    # the Stop slot is always feasible, so its logit gets gradient signal
+    # from every state in the batch while each template logit only gets
+    # signal from states where that template is feasible. Including the mask
+    # gives the actor explicit per-state feasibility, the same input PPO/A2C
+    # already get. The continuous R2 head still emits a 1024-dim fingerprint
+    # vector (see ``_td3_fp_dim``) so this change does not affect the R2
+    # storage / KNN logic for bi reactions.
+    #
+    # The Bi-TD3 PGFS-faithful config opts out (``env.append_action_mask_to_obs: false``)
+    # because PGFS Figure 2 feeds f_net the raw Morgan FP of R(1) only. The default
+    # here remains True so existing Uni-TD3 runs are bit-equivalent.
+    if kwargs.get("append_action_mask_to_obs") is None:
+        kwargs["append_action_mask_to_obs"] = True
+    env = gym.make(ENV_ID, **kwargs)
+    if getattr(env.unwrapped, "action_design", "") == TD3_UNI_DISCRETE_ACTION_DESIGN:
+        return env
+
+    # KNN selection knobs (PGFS Algorithm 1 lines 12-14). Defaults preserve the
+    # legacy reactant-distance surrogate (``QED(R2) - L2(a, R2)`` + ε-greedy).
+    # The PGFS-faithful Bi-TD3 config sets ``td3.knn_score_mode: product`` and
+    # ``td3.knn_random_epsilon: 0.0`` so the wrapper forward-reacts each top-k
+    # R(2) candidate and argmaxes the product's reward.
+    td3_cfg = config.get("td3", {}) or {}
+    return KNNWrapper(
+        env,
+        score_mode=str(td3_cfg.get("knn_score_mode", "reactant_distance")),
+        random_epsilon=float(td3_cfg.get("knn_random_epsilon", 0.3)),
+        top_k=int(td3_cfg.get("knn_top_k", 5)),
+    )
+
+
+def _to_r2_tensor(env, r2):
+    if getattr(env.unwrapped, "action_design", "") == TD3_UNI_DISCRETE_ACTION_DESIGN:
+        return torch.zeros((1, 0), device=device)
+    if isinstance(r2, torch.Tensor):
+        return r2
+    if r2 is None:
+        return torch.zeros((1, _td3_fp_dim(env)), device=device)
+    # PGFS bug fix: warm-up returns a SMILES string for the randomly chosen
+    # R(2); we used to store its raw Morgan FP (binary {0, 1}^d) in the replay
+    # buffer. After warm-up the actor stores its continuous tanh output
+    # (∈ [-1, +1]^d) for the same slot. The critic was therefore asked to fit
+    # ``Q(s, T, r2_vec)`` over two completely different distributions
+    # (sparse-binary vs dense-continuous), and the actor's DPG gradient never
+    # saw a meaningful Q surface — the run collapses to ``reward_per_step≈-1``
+    # within ~10k actor updates (W&B ``ojmdb4uf``). Map binary representations
+    # (morgan / maccs) into the tanh range; continuous representations (RLV2)
+    # already live in [-1, +1]^d via the per-feature normaliser so they're
+    # passed through unchanged. This is a Bi-TD3-only path (uni-discrete
+    # returns above; ``isinstance(Tensor)`` short-circuits the actor's own
+    # output).
+    fp = torch.tensor(env.unwrapped.reactants[r2], dtype=torch.float32, device=device)
+    is_binary = bool(
+        getattr(
+            env.unwrapped,
+            "r2_representation_is_binary",
+            getattr(env.unwrapped, "molecule_representation_is_binary", True),
+        )
+    )
+    if is_binary:
+        fp = 2.0 * fp - 1.0
+    return fp.unsqueeze(0)
+
+
+def _has_real_action(env, smiles: str | None, *, template_mask_kind: str | None = None) -> bool:
+    if not smiles:
+        return False
+    kind = td3_template_mask_kind(env, override=template_mask_kind)
+    return bool(env.unwrapped.reaction_manager.feasible_first_reactant_templates(smiles, kind=kind))
+
+
+def _num_eval_episodes(eval_env) -> int:
+    if hasattr(eval_env.unwrapped.start_strategy, "num_starts"):
+        return int(eval_env.unwrapped.start_strategy.num_starts())
+    return int(len(eval_env.unwrapped.reactant_keys))
+
+
+def _reset_eval_cycle(eval_env) -> None:
+    if hasattr(eval_env.unwrapped.start_strategy, "reset_cycle"):
+        eval_env.unwrapped.start_strategy.reset_cycle()
+
+
+def _evaluate_td3(
+    agent,
+    eval_env,
+    *,
+    seed: int,
+    eval_count: int,
+    steps_done: int,
+    template_mask_kind: str | None = None,
+) -> None:
+    previous_env = agent.env
+    agent.env = eval_env
+    episode_rewards: list[float] = []
+    episode_lengths: list[int] = []
+    episode_reaction_lengths: list[int] = []
+    episode_start_qeds: list[float] = []
+    episode_final_qeds: list[float] = []
+    episode_final_delta_qeds: list[float] = []
+    episode_max_qeds: list[float] = []
+    episode_stopped: list[float] = []
+    try:
+        _reset_eval_cycle(eval_env)
+        n_eval_episodes = _num_eval_episodes(eval_env)
+        for episode_idx in range(1, n_eval_episodes + 1):
+            state, info = eval_env.reset(seed=seed + 1_000_000 + eval_count * 10_000 + episode_idx)
+            done = False
+            episode_reward = 0.0
+            episode_len = 0
+            reaction_len = 0
+            start_qed = float(info.get("QED", 0.0))
+            max_qed = start_qed
+            final_qed = max_qed
+            stopped = False
+            while not done:
+                if not _has_real_action(eval_env, info.get("SMILES"), template_mask_kind=template_mask_kind) and not eval_env.unwrapped.use_stop_action:
+                    break
+                if hasattr(eval_env, "enable"):
+                    eval_env.enable()
+                action = agent.get_action(state, evaluate=True)
+                selected_template = int(action[0].detach().reshape(-1).argmax().item())
+                selected_stop = eval_env.unwrapped.use_stop_action and selected_template == eval_env.unwrapped.num_templates
+                state, reward, terminated, truncated, info = eval_env.step(action)
+                done = bool(terminated or truncated)
+                episode_reward += float(reward)
+                episode_len += 1
+                if selected_stop or info.get("stop"):
+                    stopped = True
+                else:
+                    reaction_len += 1
+                final_qed = float(info.get("QED", 0.0))
+                max_qed = max(max_qed, final_qed)
+            episode_rewards.append(episode_reward)
+            episode_lengths.append(episode_len)
+            episode_reaction_lengths.append(reaction_len)
+            episode_start_qeds.append(start_qed)
+            episode_final_qeds.append(final_qed)
+            episode_final_delta_qeds.append(final_qed - start_qed)
+            episode_max_qeds.append(max_qed)
+            episode_stopped.append(float(stopped))
+            wandb.log(
+                {
+                    "train/global_step": steps_done,
+                    "eval/episode": episode_idx,
+                    "eval/total_reward_each_episode": episode_reward,
+                    "eval/final_delta_qed_each_episode": final_qed - start_qed,
+                    "eval/reaction_length_each_episode": reaction_len,
+                    "eval/stopped_each_episode": float(stopped),
+                    "eval/source_train_global_step": steps_done,
+                },
+                step=steps_done,
+            )
+        final_delta_array = np.asarray(episode_final_delta_qeds, dtype=np.float32)
+        wandb.log(
+            {
+                "train/global_step": steps_done,
+                "eval/mean_reward": float(np.mean(episode_rewards)) if episode_rewards else 0.0,
+                "eval/std_reward": float(np.std(episode_rewards)) if episode_rewards else 0.0,
+                "eval/mean_ep_length": float(np.mean(episode_lengths)) if episode_lengths else 0.0,
+                "eval/mean_reaction_length": float(np.mean(episode_reaction_lengths)) if episode_reaction_lengths else 0.0,
+                "eval/stop_rate": float(np.mean(episode_stopped)) if episode_stopped else 0.0,
+                "eval/mean_start_qed": float(np.mean(episode_start_qeds)) if episode_start_qeds else 0.0,
+                "eval/mean_final_qed": float(np.mean(episode_final_qeds)) if episode_final_qeds else 0.0,
+                "eval/mean_final_delta_qed": float(np.mean(episode_final_delta_qeds)) if episode_final_delta_qeds else 0.0,
+                "eval/positive_delta_fraction": float(np.mean(final_delta_array > 0.0)) if episode_final_delta_qeds else 0.0,
+                "eval/negative_delta_fraction": float(np.mean(final_delta_array < 0.0)) if episode_final_delta_qeds else 0.0,
+                "eval/zero_delta_fraction": float(np.mean(final_delta_array == 0.0)) if episode_final_delta_qeds else 0.0,
+                "eval/max_qed": float(np.max(episode_max_qeds)) if episode_max_qeds else 0.0,
+                "eval/max_episode_qed": float(np.max(episode_max_qeds)) if episode_max_qeds else 0.0,
+                "eval/n_molecules": n_eval_episodes,
+                "eval_count": eval_count,
+            },
+            step=steps_done,
+        )
+    finally:
+        agent.env = previous_env
+
+
+def train(config: dict, experiment_name: str):
+    seed = int(config["training"].get("seed", 42))
+    set_seed(seed)
+    config = dict(config)
+    config["algorithm"] = "TD3"
+    config.setdefault("env", {})["algorithm_family"] = "td3_pgfs"
+    env_cfg = config.get("env", {})
+    if env_cfg.get("action_design") == TD3_UNI_DISCRETE_ACTION_DESIGN and config.get("reaction_mode") != "uni":
+        raise ValueError(f"{TD3_UNI_DISCRETE_ACTION_DESIGN} requires reaction_mode: uni")
+    run = init_wandb(config, "TD3", experiment_name)
+    define_ppo_compatible_metrics()
+
+    env = _make_td3_env(config, eval_env=False)
+    eval_env = _make_td3_env(config, eval_env=True)
+    td3_cfg = config["td3"]
+    train_cfg = config["training"]
+    r2_vec_dim = _td3_r2_vec_dim(env)
+    mk = td3_cfg.get("template_mask_kind")
+    template_mask_kind = mk if isinstance(mk, str) else None
+    # Opt-in SAC-discrete-style soft actor-critic update. Default False keeps
+    # existing TD3 runs untouched; setting ``td3.entropy_regularization=true``
+    # in the YAML switches to the entropy-regularized actor/critic loss.
+    entropy_regularization = bool(td3_cfg.get("entropy_regularization", False))
+    entropy_alpha = float(td3_cfg.get("entropy_alpha", 0.2))
+    # Optional automatic alpha tuning. When True, ``entropy_alpha`` is the
+    # initial value of a learnable alpha and ``target_entropy`` is the
+    # per-state entropy the tuner aims for (good default ≈ 0.5-0.6 nats for
+    # uni mode where mean log(N_feasible) ≈ 1.08).
+    auto_tune_alpha = bool(td3_cfg.get("auto_tune_alpha", False))
+    target_entropy = float(td3_cfg.get("target_entropy", 0.5))
+    # When set, per-state target = target_entropy_ratio * log(N_feasible(s)),
+    # which scales the entropy budget with the per-state action count and is
+    # the recommended path for masked discrete tasks. When None/null in the
+    # YAML, the agent falls back to the fixed-nats ``target_entropy`` above.
+    _ratio_cfg = td3_cfg.get("target_entropy_ratio", None)
+    target_entropy_ratio = None if _ratio_cfg is None else float(_ratio_cfg)
+    alpha_lr = float(td3_cfg.get("alpha_lr", 3e-4))
+    # PGFS Algorithm 1 line 21 — auxiliary cross-entropy on f_net using stored
+    # template indices. Default 0.0 keeps existing TD3 / Uni-TD3 runs untouched;
+    # the PGFS-faithful Bi-TD3 config sets ``td3.f_ce_loss_coef: 1.0``.
+    f_ce_loss_coef = float(td3_cfg.get("f_ce_loss_coef", 0.0))
+    # PGFS Algorithm 1 line 17 — target actor uses the same Gumbel-Softmax
+    # procedure as the online actor. Default False keeps the TD3-standard
+    # deterministic-argmax target action; the PGFS-faithful Bi-TD3 config opts
+    # in with ``td3.symmetric_target_actor: true``.
+    symmetric_target_actor = bool(td3_cfg.get("symmetric_target_actor", False))
+    f_hidden_dims = td3_cfg.get("f_hidden_dims")
+    pi_hidden_dims = td3_cfg.get("pi_hidden_dims")
+    critic_hidden_dims = td3_cfg.get("critic_hidden_dims")
+    f_final_activation = str(td3_cfg.get("f_final_activation", "linear"))
+
+    agent = TD3Agent(
+        env,
+        float(td3_cfg.get("actor_lr", 1e-4)),
+        float(td3_cfg.get("critic_lr", 3e-4)),
+        float(td3_cfg.get("gamma", 0.99)),
+        float(td3_cfg.get("tau", 0.005)),
+        float(td3_cfg.get("policy_noise", 0.2)),
+        float(td3_cfg.get("noise_std", 0.1)),
+        float(td3_cfg.get("noise_clip", 0.2)),
+        int(td3_cfg.get("policy_freq", 2)),
+        float(td3_cfg.get("initial_temperature", 1.0)),
+        float(td3_cfg.get("min_temperature", 0.1)),
+        int(train_cfg.get("start_timesteps", 10000)),
+        int(train_cfg.get("total_timesteps", 1_000_000)),
+        template_mask_kind=template_mask_kind,
+        entropy_regularization=entropy_regularization,
+        entropy_alpha=entropy_alpha,
+        auto_tune_alpha=auto_tune_alpha,
+        target_entropy=target_entropy,
+        target_entropy_ratio=target_entropy_ratio,
+        alpha_lr=alpha_lr,
+        f_ce_loss_coef=f_ce_loss_coef,
+        symmetric_target_actor=symmetric_target_actor,
+        f_hidden_dims=f_hidden_dims if isinstance(f_hidden_dims, list) else None,
+        pi_hidden_dims=pi_hidden_dims if isinstance(pi_hidden_dims, list) else None,
+        critic_hidden_dims=critic_hidden_dims if isinstance(critic_hidden_dims, list) else None,
+        f_final_activation=f_final_activation,
+    )
+    replay_buffer = ReplayBuffer(
+        env.unwrapped.observation_space.shape[0],
+        env.unwrapped.action_space.n,
+        r2_vec_dim,
+        int(td3_cfg.get("buffer_size", 500000)),
+    )
+
+    max_timesteps = int(train_cfg.get("total_timesteps", 1_000_000))
+    start_timesteps = int(train_cfg.get("start_timesteps", 10000))
+    batch_size = int(td3_cfg.get("batch_size", 64))
+    save_freq = int(config["callbacks"].get("model_save_freq", 100000))
+    eval_freq = int(train_cfg.get("eval_freq", 10000))
+    warmup_stop_probability = float(td3_cfg.get("warmup_stop_probability", 0.1))
+    # Optional epsilon-greedy template exploration during the post-warmup phase.
+    # Defaults are 0/0/0 so existing TD3 runs and other algorithms are unaffected.
+    training_random_action_prob = float(td3_cfg.get("training_random_action_prob", 0.0))
+    training_random_action_min_prob = float(
+        td3_cfg.get("training_random_action_min_prob", training_random_action_prob)
+    )
+    training_random_action_decay_steps = int(td3_cfg.get("training_random_action_decay_steps", 0))
+    save_replay_buffer_in_checkpoints = bool(td3_cfg.get("save_replay_buffer_in_checkpoints", False))
+    run_storage_id = str(train_cfg.get("run_id") or run.id)
+    checkpoint_dir = project_root() / "runs" / run_storage_id / "td3_checkpoints"
+    checkpoint_dir.mkdir(parents=True, exist_ok=True)
+
+    steps_done = 0
+    episode_count = 0
+    resume_checkpoint = train_cfg.get("resume_checkpoint")
+    if resume_checkpoint:
+        resume_path = Path(resolve_path(str(resume_checkpoint)))
+        if not resume_path.is_file():
+            raise FileNotFoundError(f"resume_checkpoint not found: {resume_path}")
+        loaded_steps, loaded_episodes, saved_buffer = agent.load_model(str(resume_path))
+        if train_cfg.get("resume_global_step") is not None:
+            steps_done = int(train_cfg["resume_global_step"])
+        else:
+            steps_done = global_step_from_td3_checkpoint(resume_path)
+        episode_count = int(loaded_episodes)
+        if saved_buffer is not None and save_replay_buffer_in_checkpoints:
+            replay_buffer = saved_buffer
+        print(
+            f"[resume] loaded {resume_path} at steps_done={steps_done}; "
+            f"continuing until total_timesteps={max_timesteps}"
+            + (
+                ""
+                if saved_buffer is not None and save_replay_buffer_in_checkpoints
+                else " (replay buffer starts empty)"
+            ),
+            flush=True,
+        )
+
+    completed_rewards: list[float] = []
+    cumulative_reward = 0.0
+    overall_max_qed = 0.0
+    eval_count = 0
+    max_dead_start_resamples = int(td3_cfg.get("max_dead_start_resamples", 4096))
+    while steps_done < max_timesteps:
+        episode_count += 1
+        state, info = env.reset(seed=seed + episode_count)
+        if not env.unwrapped.use_stop_action:
+            resamples = 0
+            while not _has_real_action(env, info.get("SMILES"), template_mask_kind=template_mask_kind) and resamples < max_dead_start_resamples:
+                resamples += 1
+                episode_count += 1
+                state, info = env.reset(seed=seed + episode_count)
+            if not _has_real_action(env, info.get("SMILES"), template_mask_kind=template_mask_kind):
+                steps_done += 1
+                wandb.log(
+                    {
+                        "train/global_step": steps_done,
+                        "steps_done": steps_done,
+                        "training/dead_start_skip": 1.0,
+                    },
+                    step=steps_done,
+                )
+                continue
+        done = False
+        episode_reward = 0.0
+        episode_len = 0
+        max_qed = 0.0
+        while not done and steps_done < max_timesteps:
+            steps_done += 1
+            episode_len += 1
+            if steps_done < start_timesteps:
+                if hasattr(env, "disable"):
+                    env.disable()
+                try:
+                    action = select_random_action(
+                        env,
+                        info["SMILES"],
+                        stop_probability=warmup_stop_probability,
+                        template_mask_kind=template_mask_kind,
+                    )
+                except NoValidActionError:
+                    steps_done -= 1
+                    episode_len -= 1
+                    break
+            else:
+                eps = training_random_action_prob
+                if training_random_action_decay_steps > 0 and training_random_action_prob > 0.0:
+                    progress = (steps_done - start_timesteps) / float(
+                        training_random_action_decay_steps
+                    )
+                    progress = max(0.0, min(1.0, progress))
+                    eps = (
+                        training_random_action_prob
+                        + (training_random_action_min_prob - training_random_action_prob) * progress
+                    )
+                use_random = eps > 0.0 and random.random() < eps
+                if use_random:
+                    if hasattr(env, "disable"):
+                        env.disable()
+                    try:
+                        action = select_random_action(
+                            env,
+                            info["SMILES"],
+                            stop_probability=0.0,
+                            template_mask_kind=template_mask_kind,
+                        )
+                    except NoValidActionError:
+                        steps_done -= 1
+                        episode_len -= 1
+                        break
+                else:
+                    if hasattr(env, "enable"):
+                        env.enable()
+                    action = agent.get_action(state)
+                wandb.log(
+                    {
+                        "train/global_step": steps_done,
+                        "train/eps_random_action": float(eps),
+                        "train/used_random_action": float(use_random),
+                    },
+                    step=steps_done,
+                )
+            next_state, reward, terminated, truncated, next_info = env.step(action)
+            done = bool(terminated or truncated)
+            replay_buffer.add(
+                info.get("SMILES"),
+                state,
+                action[0],
+                _to_r2_tensor(env, action[1]),
+                reward,
+                next_info.get("SMILES"),
+                next_state,
+                done,
+            )
+            state = next_state
+            info = next_info
+            episode_reward += float(reward)
+            max_qed = max(max_qed, float(info.get("QED", 0.0)))
+            wandb.log(
+                {
+                    "train/global_step": steps_done,
+                    "steps_done": steps_done,
+                    "reward_per_step": float(reward),
+                    "qed_per_step": float(info.get("QED", 0.0)),
+                    "episode": episode_count,
+                },
+                step=steps_done,
+            )
+            if steps_done >= start_timesteps and replay_buffer.size() >= batch_size:
+                metrics = agent.train(replay_buffer, batch_size)
+                metrics.update({"train/global_step": steps_done, "steps_done": steps_done})
+                wandb.log(metrics, step=steps_done)
+            if eval_freq > 0 and steps_done >= start_timesteps and steps_done % eval_freq == 0:
+                eval_count += 1
+                _evaluate_td3(
+                    agent,
+                    eval_env,
+                    seed=seed,
+                    eval_count=eval_count,
+                    steps_done=steps_done,
+                    template_mask_kind=template_mask_kind,
+                )
+            if steps_done % save_freq == 0:
+                agent.save_model(
+                    str(checkpoint_dir / f"checkpoint_{steps_done}.tar"),
+                    steps_done,
+                    episode_count,
+                    replay_buffer,
+                    include_replay_buffer=save_replay_buffer_in_checkpoints,
+                )
+        completed_rewards.append(episode_reward)
+        cumulative_reward += episode_reward
+        overall_max_qed = max(overall_max_qed, max_qed)
+        wandb.log(
+            {
+                "train/global_step": steps_done,
+                "training/total_reward_each_episode": episode_reward,
+                "train/mean_reward": float(np.mean(completed_rewards[-100:])),
+                "avg_reward": episode_reward / max(episode_len, 1),
+                "episode_length": episode_len,
+                "episode": episode_count,
+                "total_steps": steps_done,
+                "total_episodes": episode_count,
+                "cumulative_reward": cumulative_reward,
+                "max_qed": max_qed,
+                "overall_max_qed": overall_max_qed,
+            },
+            step=steps_done,
+        )
+    agent.save_model(
+        str(checkpoint_dir / "final_model.pth"),
+        steps_done,
+        episode_count,
+        replay_buffer,
+        include_replay_buffer=save_replay_buffer_in_checkpoints,
+    )
+    return agent

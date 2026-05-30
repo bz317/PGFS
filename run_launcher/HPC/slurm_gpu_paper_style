@@ -1,0 +1,53 @@
+#!/bin/bash
+#!
+#! SLURM: PGFS paper-style training (Pereira et al., 2021 §4.3 reproduction).
+#! Submit: cd /path/to/PGFS && sbatch run_launcher/HPC/slurm_gpu_paper_style
+#!
+
+#SBATCH -J pgfs_paper_style
+#SBATCH -A OZTIRELI-SL2-GPU
+#SBATCH --nodes=1
+#SBATCH --ntasks=1
+#SBATCH --gres=gpu:1
+#SBATCH --time=36:00:00
+#SBATCH --mail-user=bz317@cam.ac.uk
+#SBATCH --mail-type=ALL
+#SBATCH -p ampere
+##SBATCH -o logs/pgfs_paper_style_%j.out
+##SBATCH -e logs/pgfs_paper_style_%j.err
+
+. /etc/profile.d/modules.sh
+module purge
+module load rhel8/default-amp
+
+CONDA_ROOT="${CONDA_ROOT:-/home/bz317/rds/hpc-work/miniconda3}"
+source "${CONDA_ROOT}/etc/profile.d/conda.sh"
+CONDA_ENV="${CONDA_ENV:-pgfs}"
+conda activate "${CONDA_ENV}"
+
+LAUNCHER_REL="run_launcher/run_train.sh"
+for _cand in "${SLURM_SUBMIT_DIR}" "${SLURM_SUBMIT_DIR}/.." "/home/bz317/rds/hpc-work/GenMolRL/PGFS"; do
+  if [ -f "${_cand}/${LAUNCHER_REL}" ]; then
+    PROJECT_ROOT="$(cd "${_cand}" && pwd)"
+    break
+  fi
+done
+unset _cand
+
+export OMP_NUM_THREADS=1
+export PYTHONUNBUFFERED=1
+export WANDB_RUN_POST_APPEND="${WANDB_RUN_POST_APPEND:-HPC}"
+export CONFIG="${CONFIG:-configs/paper_style_delta_qed.yaml}"
+
+cd "${PROJECT_ROOT}"
+mkdir -p logs runs
+JOBID=$SLURM_JOB_ID
+
+CMD="bash \"${PROJECT_ROOT}/${LAUNCHER_REL}\""
+CMD="$CMD 2>&1 | tee logs/pgfs_paper_style_${JOBID}.log"
+
+echo "JobID: ${JOBID}"
+echo "PROJECT_ROOT: ${PROJECT_ROOT}"
+echo "CONFIG: ${CONFIG}"
+echo "Executing: ${CMD}"
+eval "${CMD}"

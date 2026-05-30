@@ -1,0 +1,100 @@
+# =============================================================================
+# TD3 | BI templates | CONTINUOUS PGFS-style action space (paper-style)
+# REWARD = qed (per-step ABSOLUTE QED of the resulting molecule)
+# -----------------------------------------------------------------------------
+# Sibling of ``td3_bi_continuous_pgfs_paper_style_delta_qed.yaml``: identical
+# architecture / hyperparameters, only ``reward`` differs (qed vs delta_qed).
+#
+# ``reward: qed`` rewards EVERY reacting step with QED(product) — it is NOT a
+# terminal-only reward (see genmolrl/envs/rewards.py::RewardFunction; ``qed`` is
+# the canonical name, ``final_qed`` is a backward-compat alias for the same
+# behaviour). The episode return is therefore Σ_t QED(product_t). The kNN R(2)
+# selection (genmolrl/algorithms/td3/knn.py::_select_by_product_reward) and eval
+# both use the same env reward_fn, so the absolute-QED signal is consistent
+# end-to-end.
+#
+# NOTE: summing absolute QED over steps biases the agent toward always-react
+# regardless of whether a step improves QED (see the td3_uni_continuous note on
+# run 2va9u7gz). Use this config to measure that effect against the delta_qed
+# baseline, not as a drop-in improvement.
+#
+# Matches PGFS (Pereira et al., 2021) §4.3 Model Setup + Algorithm 1 / Figure 2
+# with explicit, user-allowed deviations:
+#
+#   (1) Reward = absolute QED (per step), not shaped-HIV-CCR5.
+#   (2) Training R(1) from random_pool (paper-compatible).
+#   (3) Eval cycles the full test reactant pool (GenMolRL convention), not a
+#       fixed random subset of 100.
+#
+# Paper PGFS has no Stop action — episodes run for ``max_episode_len`` steps only
+# (learned early stopping is proposed as future work).
+# Paper §4.3 / Choice of Parameters:
+#   • State (R(1)) = ECFP; R(2) action = RLV2 (35-d MolDSet).
+#   • f: FC[256,128,128] ReLU + tanh; π: FC[256,256,167] ReLU + tanh→35-d RLV2;
+#     Q: FC[256,64,16] ReLU + linear (twin Q is a TD3 extension).
+#   • Adam lr 1e-4 (f+π), 3e-4 (Q); γ=0.99; τ=0.005; batch=32.
+#   • Warm-up 3k; π noise N(0,0.1); target smoothing σ=0.2 clip ±0.2.
+#   • f CE coef=1.0; kNN k=1; Gumbel τ 1.0→0.1.
+#   • T_mask via ``r2_available`` (Figure 2 state-dependent mask).
+# =============================================================================
+project: PGFS_Bi
+experiment_name: PGFS_Bi_Paper_Style_QED
+reaction_mode: bi
+masking: r2_available
+reward: qed
+max_episode_len: 5
+dataset:
+  training_file: data/Bi/reactants_train.pkl
+  test_file: data/Bi/reactants_test.pkl
+  templates_file: data/Bi/templates.pkl
+  start_strategy: random_pool
+  eval_r2_pool: train
+env:
+  algorithm_family: td3_pgfs
+  action_design: pgfs_continuous_r2
+  use_stop_action: false
+  stop_early_penalty: 0.0
+  stop_penalty_until_step: -1
+  invalid_reaction_penalty: -1.0
+  append_action_mask_to_obs: false
+  state_representation: morgan
+  r2_representation: rlv2
+training:
+  seed: 42
+  total_timesteps: 1000000
+  start_timesteps: 3000
+  eval_freq: 10000
+  n_envs: 1
+td3:
+  actor_lr: 0.0001
+  critic_lr: 0.0003
+  gamma: 0.99
+  tau: 0.005
+  batch_size: 32
+  buffer_size: 1000000
+  policy_freq: 2
+  policy_noise: 0.2
+  noise_std: 0.1
+  noise_clip: 0.2
+  initial_temperature: 1.0
+  min_temperature: 0.1
+  f_ce_loss_coef: 1.0
+  symmetric_target_actor: true
+  # §4.3 architectures (4 FC layers each: 3 hidden ReLU + final activation).
+  f_hidden_dims: [256, 128, 128]
+  f_final_activation: tanh
+  pi_hidden_dims: [256, 256, 167]
+  critic_hidden_dims: [256, 64, 16]
+  knn_score_mode: product
+  knn_random_epsilon: 0.0
+  knn_top_k: 1
+  training_random_action_prob: 0.0
+  training_random_action_min_prob: 0.0
+  training_random_action_decay_steps: 0
+  warmup_stop_probability: 0.0
+  entropy_regularization: false
+  auto_tune_alpha: false
+  save_replay_buffer_in_checkpoints: false
+callbacks:
+  model_save_freq: 100000
+  gradient_save_freq: 100
