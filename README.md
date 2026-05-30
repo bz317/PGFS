@@ -1,6 +1,11 @@
 # PGFS — Policy Gradient on Feasible Syntheses
 
-Standalone reproduction of **Policy Gradient on Feasible Syntheses (PGFS)** for **bimolecular** reaction-based molecular design, following the model setup in [Sai et al., 2020](https://arxiv.org/pdf/2004.12485) (§4.3, Algorithm 1, Figure 2).
+Standalone reproduction of **Policy Gradient on Feasible Syntheses (PGFS)** from the paper:
+
+> **Learning to Navigate the Synthetically Accessible Chemical Space Using Reinforcement Learning**  
+> Sai et al., 2020 — [arXiv:2004.12485](https://arxiv.org/pdf/2004.12485)
+
+This repo implements the **bimolecular** setup from §4.3, Algorithm 1, and Figure 2 of that paper.
 
 Both shipped configs use the **same paper-style setup** (ECFP state, RLV2 action, kNN k=1, `r2_available` masking, no Stop, horizon 5). They differ only in the **per-step reward signal** — see [Reward modes](#reward-modes) below.
 
@@ -207,6 +212,13 @@ pip install -e .
 | PyYAML | Config loading |
 | Weights & Biases | Metrics + run tracking |
 
+
+---
+
+## Reference
+
+**Learning to Navigate the Synthetically Accessible Chemical Space Using Reinforcement Learning**  
+Sai et al., 2020 — [arXiv:2004.12485](https://arxiv.org/pdf/2004.12485) (PGFS)
 
 ---
 
