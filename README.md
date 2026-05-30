@@ -9,6 +9,25 @@ This repo implements the **bimolecular** setup from §4.3, Algorithm 1, and Figu
 
 Both shipped configs use the **same paper-style setup** (ECFP state, RLV2 action, kNN k=1, `r2_available` masking for \(T_{\mathrm{mask}}\), no Stop, horizon 5) — see [Hyperparameters (§4.3)](#hyperparameters-paper-43). They differ only in the **per-step reward signal** — see [Reward modes](#reward-modes) below.
 
+## Contents
+
+- [Workflow](#workflow)
+  - [1. Install](#1-install)
+  - [2. Run](#2-run)
+  - [3. Results](#3-results)
+- [Reward modes](#reward-modes)
+- [Training curves](#training-curves)
+- [What this implements](#what-this-implements)
+- [Hyperparameters (paper §4.3)](#hyperparameters-paper-43)
+  - [Difference from the original paper](#difference-from-the-original-paper)
+- [Repository layout](#repository-layout)
+  - [Bundled data (`data/Bi/`)](#bundled-data-databi)
+- [Installation details](#installation-details)
+  - [Option A — conda (recommended)](#option-a--conda-recommended)
+  - [Option B — pip only](#option-b--pip-only)
+- [Reference](#reference)
+- [License](#license)
+
 ---
 
 ## Workflow
@@ -235,6 +254,8 @@ Both configs (`paper_style_delta_qed.yaml`, `paper_style_qed.yaml`) share the se
 1. **Eval protocol**: full test reactant pool (~12k molecules) one-by-one eval (paper uses a fixed random subset of 100).
 
 ---
+
+## Repository layout
 
 ```text
 PGFS/
