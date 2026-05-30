@@ -165,7 +165,7 @@ PGFS learns a policy over **reaction templates** and **second reactants** (build
 - **Action** \(R^{(2)}\): continuous RLV2 descriptor (35-d MolDSet) retrieved via **kNN** (k=1) with **product-reward** scoring (forward-react each candidate, argmax using the active reward mode)
 - **Template head** `f`: FC[256,128,128] + tanh, trained with auxiliary cross-entropy (coef=1.0)
 - **Policy** `π`: FC[256,256,167] + tanh → RLV2 vector
-- **Critic** `Q`: twin networks FC[256,64,16] (TD3 extension of the paper's single Q)
+- **Critic** `Q`: twin networks FC[256,64,16] (TD3, as in the paper)
 - **Optimizer**: Adam, lr 1e-4 (actor), 3e-4 (critic)
 - **Masking**: `r2_available` (state-dependent template + R2 feasibility)
 - **No Stop action** (paper-style; fixed horizon = 5 reactions)
@@ -173,11 +173,10 @@ PGFS learns a policy over **reaction templates** and **second reactants** (build
 - **Evaluation**: cycle through held-out test reactants; R2 pool from training set (`eval_r2_pool: train`)
 - **Reward**: per-step ΔQED or per-step QED — see [Reward modes](#reward-modes)
 
-### Other deviations from the original paper
+### Difference from the original paper
 
-1. **Objective molecule property**: QED (modes above) instead of shaped HIV/CCR5.
-2. **Eval protocol**: full test reactant pool each eval (not a fixed random subset of 100).
-3. **Twin delayed DDPG (TD3)** instead of a single critic (standard stabilisation for continuous control).
+1. **Eval protocol**: full test reactant pool (~12k molecules) one-by-one eval.
+
 
 ---
 
