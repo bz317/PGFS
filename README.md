@@ -7,7 +7,7 @@ Standalone reproduction of **Policy Gradient for Forward Synthesis (PGFS)** from
 
 This repo implements the **bimolecular** setup from §4.3, Algorithm 1, and Figure 2 of that paper.
 
-Both shipped configs use the **same paper-style setup** (ECFP state, RLV2 action, kNN k=1, `r2_available` masking, no Stop, horizon 5). They differ only in the **per-step reward signal** — see [Reward modes](#reward-modes) below.
+Both shipped configs use the **same paper-style setup** (ECFP state, RLV2 action, kNN k=1, `r2_available` masking for \(T_{\mathrm{mask}}\), no Stop, horizon 5) — see [Hyperparameters (§4.3)](#hyperparameters-paper-43). They differ only in the **per-step reward signal** — see [Reward modes](#reward-modes) below.
 
 ---
 
@@ -160,28 +160,81 @@ The script fetches **train** and **test** metrics separately (W&B merges sparse 
 
 ## What this implements
 
-PGFS learns a policy over **reaction templates** and **second reactants** (building blocks) under synthesis constraints:
+PGFS learns a policy over **reaction templates** \(T\) and **second reactants** \(R^{(2)}\) (building blocks) under synthesis constraints. At each step the agent observes the current molecule \(R^{(1)}\), picks a template, outputs a continuous RLV2 vector for \(R^{(2)}\), and kNN maps that vector to a discrete building block.
 
-- **State** \(R^{(1)}\): Morgan ECFP fingerprint (1024-d)
-- **Action** \(R^{(2)}\): continuous RLV2 descriptor (35-d MolDSet) retrieved via **kNN** (k=1) with **product-reward** scoring (forward-react each candidate, argmax using the active reward mode)
-- **Template head** `f`: FC[256,128,128] + tanh, trained with auxiliary cross-entropy (coef=1.0)
-- **Policy** `π`: FC[256,256,167] + tanh → RLV2 vector
-- **Critic** `Q`: twin networks FC[256,64,16] (TD3, as in the paper)
-- **Optimizer**: Adam, lr 1e-4 (actor), 3e-4 (critic)
-- **Masking**: `r2_available` (state-dependent template + R2 feasibility)
-- **No Stop action** (paper-style; fixed horizon = 5 reactions)
-- **Training starts**: random draw from building-block pool
-- **Evaluation**: cycle through held-out test reactants; R2 pool from training set (`eval_r2_pool: train`)
-- **Reward**: per-step ΔQED or per-step QED — see [Reward modes](#reward-modes)
-
-### Difference from the original paper
-
-1. **Eval protocol**: full test reactant pool (~12k molecules) one-by-one eval.
-
+See [Hyperparameters (§4.3)](#hyperparameters-paper-43) for the full paper-matched settings and how **\(T_{\mathrm{mask}}\)** is built.
 
 ---
 
-## Repository layout
+## Hyperparameters (paper §4.3)
+
+Both configs (`paper_style_delta_qed.yaml`, `paper_style_qed.yaml`) share the settings below. Only `reward` differs — see [Reward modes](#reward-modes).
+
+**Environment and synthesis graph**
+
+- `reaction_mode: bi` — bimolecular template pool (unimolecular + bimolecular templates together).
+- `max_episode_len: 5` — fixed synthesis depth; no learned early stopping.
+- `use_stop_action: false` — no Stop action in the action space (paper PGFS).
+- `invalid_reaction_penalty: -1.0` — reward when forward synthesis fails.
+- `action_design: pgfs_continuous_r2` — discrete template via `f` + Gumbel-Softmax; continuous RLV2 vector via `π`; kNN maps the vector to a discrete building block.
+
+**State and action representations** (YAML keys → paper names)
+
+- `state_representation: morgan` → **Morgan ECFP fingerprint (ECFP4)** for \(R^{(1)}\): radius 2, 1024 bits, binary `{0,1}^{1024}` (paper §4.3 “ECFP state”).
+- `r2_representation: rlv2` → **RLV2 / MolDSet** for \(R^{(2)}\): 35 RDKit descriptors (PGFS Appendix A), z-scored using statistics fit on the training building-block pool (`reactants_train.pkl.rlv2_norm.npz`), output in ~`[-1, +1]^{35}`.
+- `append_action_mask_to_obs: false` — \(T_{\mathrm{mask}}\) is applied inside the actor (logit masking), not concatenated onto the state vector.
+
+**Template masking — \(T_{\mathrm{mask}}\)** (`masking: r2_available`, Figure 2)
+
+- We build **\(T_{\mathrm{mask}}\)** with the **`r2_available`** check: from current \(R^{(1)}\), mark each template feasible if \(R^{(1)}\) matches its first-reactant pattern and (for bimolecular templates) at least one R(2) building block matches the second-reactant pattern. Masked logits use **`T ← T ⊙ T_{\mathrm{mask}}`** before Gumbel-Softmax.
+
+**kNN second-reactant retrieval** (Algorithm 1)
+
+- `knn_top_k: 1` — retrieve the single nearest building block in RLV2 space (paper: k = 1).
+- `knn_score_mode: product` — forward-react \(R^{(1)} + T + R^{(2)}_i\) for each candidate; score the **product** with the active reward function; **hard argmax** over products.
+- `knn_random_epsilon: 0.0` — no ε-greedy tie-breaking on kNN (PGFS hard argmax).
+
+**Neural networks** — four FC layers each (3 hidden ReLU + final activation; §4.3)
+
+- **Template head `f`** (`f_hidden_dims: [256, 128, 128]`, `f_final_activation: tanh`)
+  - Input: ECFP state (1024-d).
+  - Hidden: 256 → 128 → 128, ReLU.
+  - Output: template logits, **tanh** → masked Gumbel-Softmax sample over templates.
+- **R(2) head `π`** (`pi_hidden_dims: [256, 256, 167]`)
+  - Input: ECFP state + one-hot selected template.
+  - Hidden: 256 → 256 → 167, ReLU.
+  - Output: **Linear(167 → 35) + tanh** → continuous RLV2 action vector.
+- **Critic `Q`** — **twin** networks (`critic_hidden_dims: [256, 64, 16]`, TD3)
+  - Input: ECFP state + template one-hot + RLV2 vector (35-d).
+  - Hidden: 256 → 64 → 16, ReLU.
+  - Output: scalar Q, **linear** (no tanh on Q).
+- **Auxiliary template loss:** `f_ce_loss_coef: 1.0` — cross-entropy on stored template indices (Algorithm 1, line 21).
+
+**TD3 / policy optimization** (§4.3 + Algorithm 1)
+
+- Optimizer: **Adam** — `actor_lr: 1e-4` on `f` + `π`, `critic_lr: 3e-4` on twin `Q`.
+- `gamma: 0.99`, `tau: 0.005` — discount and target soft-update.
+- `batch_size: 32`, `buffer_size: 1000000` — replay batch and buffer capacity.
+- `policy_freq: 2` — delayed policy update (TD3).
+- `policy_noise: 0.2`, `noise_clip: 0.2` — target policy smoothing (clip ±0.2).
+- `noise_std: 0.1` — Gaussian exploration noise on the **π** output, \(\mathcal{N}(0, 0.1)\).
+- `initial_temperature: 1.0`, `min_temperature: 0.1` — Gumbel-Softmax temperature annealed exponentially from 1.0 → 0.1 over training.
+- `symmetric_target_actor: true` — target actor uses the same Gumbel-Softmax procedure as the online actor (Algorithm 1, line 17), not deterministic argmax.
+- `start_timesteps: 3000` — random-action warm-up before gradient updates (paper: 3k steps).
+- `warmup_stop_probability: 0.0` — no Stop sampling during warm-up (consistent with `use_stop_action: false`).
+- `training_random_action_prob: 0.0` — no ε-greedy template exploration after warm-up.
+- `entropy_regularization: false`, `auto_tune_alpha: false` — standard TD3 (not SAC-style entropy tuning).
+
+**Training molecule protocol**
+
+- `start_strategy: random_pool` — training episodes start from a random building block in `reactants_train.pkl`.
+- `eval_r2_pool: train` — at evaluation, R(2) candidates come from the training building-block pool (paper-compatible).
+
+### Difference from the original paper
+
+1. **Eval protocol**: full test reactant pool (~12k molecules) one-by-one eval (paper uses a fixed random subset of 100).
+
+---
 
 ```text
 PGFS/
