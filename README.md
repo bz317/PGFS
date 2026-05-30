@@ -7,7 +7,7 @@ Standalone reproduction of **Policy Gradient for Forward Synthesis (PGFS)** from
 
 This repo implements the **bimolecular** setup from §4.3, Algorithm 1, and Figure 2 of that paper.
 
-Both shipped configs use the **same paper-style setup** (ECFP state, RLV2 action, kNN k=1, `r2_available` masking for \(T_{\mathrm{mask}}\), no Stop, horizon 5) — see [Hyperparameters (§4.3)](#hyperparameters-paper-43). They differ only in the **per-step reward signal** — see [Reward modes](#reward-modes) below.
+Both shipped configs use the **same paper-style setup** (ECFP state, RLV2 action, kNN k=1, `r2_available` masking for **T_mask**, no Stop, horizon 5) — see [Hyperparameters (§4.3)](#hyperparameters-paper-43). They differ only in the **per-step reward signal** — see [Reward modes](#reward-modes) below.
 
 ## Contents
 
@@ -136,7 +136,7 @@ Primary molecule-quality metric: **`eval/mean_final_delta_qed`** (mean QED impro
 
 | Mode | Config key | Per-step reward | Config file |
 |------|------------|-----------------|-------------|
-| **(1) ΔQED per step** | `reward: delta_qed` | `QED(product_t) − QED(product_{t−1})` — rewards *improvement* at each reaction | `configs/paper_style_delta_qed.yaml` |
+| **(1) ΔQED per step** | `reward: delta_qed` | `QED(product_t) − QED(product_t-1)` — rewards *improvement* at each reaction | `configs/paper_style_delta_qed.yaml` |
 | **(2) QED per step** | `reward: qed` | `QED(product_t)` — rewards *absolute* drug-likeness of each intermediate/final product | `configs/paper_style_qed.yaml` |
 
 Override from the CLI: `--reward delta_qed` or `--reward qed`.
@@ -149,7 +149,7 @@ Example **paper-style** runs on the Bi setup (same architecture / hyperparameter
 
 | Run | W&B | Reward (per step) | Steps (snapshot) | Train mean reward | Test mean reward |
 |-----|-----|-------------------|------------------|-------------------|------------------|
-| **ΔQED** | [`6ryqkars`](https://wandb.ai/boqiaoz-cambridge/GenMolRL_Bi/runs/6ryqkars) | `QED(product_t) − QED(product_{t−1})` | ~350k / 1M | ≈ −0.27 | ≈ −0.22 |
+| **ΔQED** | [`6ryqkars`](https://wandb.ai/boqiaoz-cambridge/GenMolRL_Bi/runs/6ryqkars) | `QED(product_t) − QED(product_t-1)` | ~350k / 1M | ≈ −0.27 | ≈ −0.22 |
 | **QED** | [`3d7j4vp2`](https://wandb.ai/boqiaoz-cambridge/GenMolRL_Bi/runs/3d7j4vp2) | `QED(product_t)` | ~373k / 1M | ≈ 2.20 | ≈ 2.02 |
 
 **ΔQED per step** (`reward: delta_qed`):
@@ -179,9 +179,9 @@ The script fetches **train** and **test** metrics separately (W&B merges sparse 
 
 ## What this implements
 
-PGFS learns a policy over **reaction templates** \(T\) and **second reactants** \(R^{(2)}\) (building blocks) under synthesis constraints. At each step the agent observes the current molecule \(R^{(1)}\), picks a template, outputs a continuous RLV2 vector for \(R^{(2)}\), and kNN maps that vector to a discrete building block.
+PGFS learns a policy over **reaction templates** T and **second reactants** R(2) (building blocks) under synthesis constraints. At each step the agent observes the current molecule R(1), picks a template, outputs a continuous RLV2 vector for R(2), and kNN maps that vector to a discrete building block.
 
-See [Hyperparameters (§4.3)](#hyperparameters-paper-43) for the full paper-matched settings and how **\(T_{\mathrm{mask}}\)** is built.
+See [Hyperparameters (§4.3)](#hyperparameters-paper-43) for the full paper-matched settings and how **T_mask** is built.
 
 ---
 
@@ -199,18 +199,18 @@ Both configs (`paper_style_delta_qed.yaml`, `paper_style_qed.yaml`) share the se
 
 **State and action representations** (YAML keys → paper names)
 
-- `state_representation: morgan` → **Morgan ECFP fingerprint (ECFP4)** for \(R^{(1)}\): radius 2, 1024 bits, binary `{0,1}^{1024}` (paper §4.3 “ECFP state”).
-- `r2_representation: rlv2` → **RLV2 / MolDSet** for \(R^{(2)}\): 35 RDKit descriptors (PGFS Appendix A), z-scored using statistics fit on the training building-block pool (`reactants_train.pkl.rlv2_norm.npz`), output in ~`[-1, +1]^{35}`.
-- `append_action_mask_to_obs: false` — \(T_{\mathrm{mask}}\) is applied inside the actor (logit masking), not concatenated onto the state vector.
+- `state_representation: morgan` → **Morgan ECFP fingerprint (ECFP4)** for R(1): radius 2, 1024 bits, binary 1024-d vector (paper §4.3 “ECFP state”).
+- `r2_representation: rlv2` → **RLV2 / MolDSet** for R(2): 35 RDKit descriptors (PGFS Appendix A), z-scored using statistics fit on the training building-block pool (`reactants_train.pkl.rlv2_norm.npz`), output in ~[-1, +1] per dimension.
+- `append_action_mask_to_obs: false` — **T_mask** is applied inside the actor (logit masking), not concatenated onto the state vector.
 
-**Template masking — \(T_{\mathrm{mask}}\)** (`masking: r2_available`, Figure 2)
+**Template masking — T_mask** (`masking: r2_available`, Figure 2)
 
-- We build **\(T_{\mathrm{mask}}\)** with the **`r2_available`** check: from current \(R^{(1)}\), mark each template feasible if \(R^{(1)}\) matches its first-reactant pattern and (for bimolecular templates) at least one R(2) building block matches the second-reactant pattern. Masked logits use **`T ← T ⊙ T_{\mathrm{mask}}`** before Gumbel-Softmax.
+- We build **T_mask** with the **`r2_available`** check: from current R(1), mark each template feasible if R(1) matches its first-reactant pattern and (for bimolecular templates) at least one R(2) building block matches the second-reactant pattern. Masked logits use **T ← T ⊙ T_mask** (element-wise product) before Gumbel-Softmax.
 
 **kNN second-reactant retrieval** (Algorithm 1)
 
 - `knn_top_k: 1` — retrieve the single nearest building block in RLV2 space (paper: k = 1).
-- `knn_score_mode: product` — forward-react \(R^{(1)} + T + R^{(2)}_i\) for each candidate; score the **product** with the active reward function; **hard argmax** over products.
+- `knn_score_mode: product` — forward-react R(1) + T + R(2)_i for each candidate; score the **product** with the active reward function; **hard argmax** over products.
 - `knn_random_epsilon: 0.0` — no ε-greedy tie-breaking on kNN (PGFS hard argmax).
 
 **Neural networks** — four FC layers each (3 hidden ReLU + final activation; §4.3)
@@ -236,7 +236,7 @@ Both configs (`paper_style_delta_qed.yaml`, `paper_style_qed.yaml`) share the se
 - `batch_size: 32`, `buffer_size: 1000000` — replay batch and buffer capacity.
 - `policy_freq: 2` — delayed policy update (TD3).
 - `policy_noise: 0.2`, `noise_clip: 0.2` — target policy smoothing (clip ±0.2).
-- `noise_std: 0.1` — Gaussian exploration noise on the **π** output, \(\mathcal{N}(0, 0.1)\).
+- `noise_std: 0.1` — Gaussian exploration noise on the **π** output, N(0, 0.1).
 - `initial_temperature: 1.0`, `min_temperature: 0.1` — Gumbel-Softmax temperature annealed exponentially from 1.0 → 0.1 over training.
 - `symmetric_target_actor: true` — target actor uses the same Gumbel-Softmax procedure as the online actor (Algorithm 1, line 17), not deterministic argmax.
 - `start_timesteps: 3000` — random-action warm-up before gradient updates (paper: 3k steps).
