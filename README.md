@@ -251,7 +251,7 @@ Both configs (`paper_style_delta_qed.yaml`, `paper_style_qed.yaml`) share the se
 
 ### Difference from the original paper
 
-1. **Eval protocol**: full test reactant pool (~12k molecules) one-by-one eval (paper uses a fixed random subset of 100).
+1. **Eval protocol**: full test reactant pool (~12k molecules) one-by-one eval (paper uses a random subset of 2k molecules).
 
 ---
 
