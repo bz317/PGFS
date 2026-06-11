@@ -1,6 +1,6 @@
 # PGFS —  Policy Gradient for Forward Synthesis
 
-Standalone successful? reproduction of **Policy Gradient for Forward Synthesis (PGFS)** from the paper:
+Successful? reproduction of **Policy Gradient for Forward Synthesis (PGFS)** from the paper:
 
 > **Learning to Navigate the Synthetically Accessible Chemical Space Using Reinforcement Learning**  
 > Sai et al., 2020 — [arXiv:2004.12485](https://arxiv.org/pdf/2004.12485)
