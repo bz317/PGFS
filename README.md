@@ -3,7 +3,7 @@
 Successful? reproduction of **Policy Gradient for Forward Synthesis (PGFS)** from the paper:
 
 > **Learning to Navigate the Synthetically Accessible Chemical Space Using Reinforcement Learning**  
-> Sai et al., 2020 — [arXiv:2004.12485](https://arxiv.org/pdf/2004.12485)
+> Gottipati et al., 2020 — [arXiv:2004.12485](https://arxiv.org/pdf/2004.12485)
 
 This repo implements the **bimolecular** setup from §4.3, Algorithm 1, and Figure 2 of that paper.
 
@@ -371,7 +371,7 @@ pip install -e .
 ## Reference
 
 **Learning to Navigate the Synthetically Accessible Chemical Space Using Reinforcement Learning**  
-Sai et al., 2020 — [arXiv:2004.12485](https://arxiv.org/pdf/2004.12485) (PGFS)
+Gottipati et al., 2020 — [arXiv:2004.12485](https://arxiv.org/pdf/2004.12485) (PGFS)
 
 ---
 
