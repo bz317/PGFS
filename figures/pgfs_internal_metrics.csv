@@ -1,0 +1,4 @@
+method,molecule_selection,n_episodes,qed_median,diversity_median,sa_median
+Original,start,12689,0.703095,0.896174,2.435391
+PGFS (qed),max_qed,12689,0.811779,0.866755,3.288212
+PGFS (delta_qed),max_qed,12689,0.810308,0.875805,3.344587

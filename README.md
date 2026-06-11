@@ -1,6 +1,6 @@
 # PGFS —  Policy Gradient for Forward Synthesis
 
-Standalone reproduction of **Policy Gradient for Forward Synthesis (PGFS)** from the paper:
+Standalone successful? reproduction of **Policy Gradient for Forward Synthesis (PGFS)** from the paper:
 
 > **Learning to Navigate the Synthetically Accessible Chemical Space Using Reinforcement Learning**  
 > Sai et al., 2020 — [arXiv:2004.12485](https://arxiv.org/pdf/2004.12485)
@@ -17,6 +17,7 @@ Both shipped configs use the **same paper-style setup** (ECFP state, RLV2 action
   - [3. Results](#3-results)
 - [Reward modes](#reward-modes)
 - [Training curves](#training-curves)
+- [Internal test evaluation](#internal-test-evaluation)
 - [What this implements](#what-this-implements)
 - [Hyperparameters (paper §4.3)](#hyperparameters-paper-43)
   - [Difference from the original paper](#difference-from-the-original-paper)
@@ -177,6 +178,48 @@ The script fetches **train** and **test** metrics separately (W&B merges sparse 
 
 ---
 
+## Internal test evaluation
+
+Held-out **Bi test pool** (~12.7k start molecules). Violins compare **Original** (unmodified starts) with the two PGFS reward modes trained to 1M steps:
+
+| Method | W&B run | Reward (per step) |
+|--------|---------|-------------------|
+| **PGFS (qed)** | [`3d7j4vp2`](https://wandb.ai/boqiaoz-cambridge/GenMolRL_Bi/runs/3d7j4vp2) | `QED(product_t)` |
+| **PGFS (δ_qed)** | [`6ryqkars`](https://wandb.ai/boqiaoz-cambridge/GenMolRL_Bi/runs/6ryqkars) | `QED(product_t) − QED(product_{t−1})` |
+
+**Metrics** (paper-aligned molecule selection):
+
+| Metric | Original | PGFS (qed) | PGFS (δ_qed) |
+|--------|----------|------------|--------------|
+| **QED ↑** (median) | 0.703 | **0.812** | 0.810 |
+| **Diversity ↑** (median) | 0.896 | 0.867 | **0.876** |
+| **SA ↓** (median) | **2.435** | 3.288 | 3.345 |
+
+- **QED** — PGFS reports the **max QED per episode** (best molecule along the 5-step trajectory), matching the paper; Original uses start-molecule QED.
+- **Diversity** — bootstrap structural diversity (Morgan FP, Tanimoto; 400 bootstrap samples of 1000 molecules).
+- **SA** — synthetic accessibility of the max-QED molecule (PGFS) or start molecule (Original); lower = easier to synthesize.
+
+**3×3 grid** (rows: QED / Diversity / SA; columns: Original / PGFS (qed) / PGFS (δ_qed)):
+
+![PGFS internal test: QED, diversity, and SA](figures/pgfs_internal_3x3_violin.png)
+
+**Per-metric violins** (three methods side-by-side):
+
+| QED ↑ | Diversity ↑ | SA ↓ |
+|-------|-------------|------|
+| ![QED](figures/pgfs_internal_qed_violin.png) | ![Diversity](figures/pgfs_internal_diversity_violin.png) | ![SA](figures/pgfs_internal_sa_violin.png) |
+
+Regenerate from the GenMolRL plot cache (sibling repo; no re-parsing of detailed logs):
+
+```bash
+# From PGFS/ — expects ../GenMolRL/run_detailed_results/experiments_vis/plot_cache/internal/
+python scripts/plot_internal_metrics_violins.py
+```
+
+Override cache location if needed: `--cache-dir /path/to/plot_cache/internal`.
+
+---
+
 ## What this implements
 
 PGFS learns a policy over **reaction templates** T and **second reactants** R(2) (building blocks) under synthesis constraints. At each step the agent observes the current molecule R(1), picks a template, outputs a continuous RLV2 vector for R(2), and kNN maps that vector to a discrete building block.
@@ -267,7 +310,8 @@ PGFS/
 ├── data/Bi/               # bundled reactants + templates (~11 MB)
 ├── scripts/train.py       # CLI entry point
 ├── scripts/plot_wandb_curves.py  # regenerate README training curves from W&B
-├── figures/               # training curve PNGs + CSV exports (for README)
+├── scripts/plot_internal_metrics_violins.py  # QED / diversity / SA violins (README)
+├── figures/               # training curves + internal-test violins (for README)
 ├── run_launcher/          # run_train.sh + HPC/slurm_gpu_paper_style
 ├── runs/                  # checkpoints (created at train time)
 ├── wandb/                 # W&B local files (created at train time)
