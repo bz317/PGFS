@@ -1,10 +1,11 @@
 # PGFS —  Policy Gradient for Forward Synthesis
 
-<table>
+<table width="100%">
 <tr>
-<td bgcolor="#D6EAF8" width="100%">
+<td bgcolor="#2E86C1" width="12"></td>
+<td bgcolor="#EAF4FB">
 
-**News.** We have released **PGFS++** at [https://github.com/bz317/PGFS_plus_plus](https://github.com/bz317/PGFS_plus_plus).
+**📢 News.** We have released **PGFS++** at [https://github.com/bz317/PGFS_plus_plus](https://github.com/bz317/PGFS_plus_plus), an extension of PGFS that achieves performance comparable to leading methods.
 
 </td>
 </tr>
