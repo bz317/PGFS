@@ -7,6 +7,7 @@ name = "pgfs"
 version = "0.1.0"
 description = "Policy Gradient on Feasible Syntheses (Pereira et al., 2021) — bimolecular reproduction"
 readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.10"
 dependencies = [
   "torch>=2.0",

@@ -371,4 +371,6 @@ Gottipati et al., 2020 — [arXiv:2004.12485](https://arxiv.org/pdf/2004.12485) 
 
 ## License
 
-See LICENSE (if present) or the parent GenMolRL repository license.
+This repository is released under the [MIT License](LICENSE).
+
+That is the usual choice for a paper reproduction: others can reuse, modify, and compare against this code with few restrictions, as long as they keep the copyright notice. Please still cite Gottipati et al., 2020 if you use the method.
