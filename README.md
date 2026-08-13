@@ -1,20 +1,18 @@
 # PGFS —  Policy Gradient for Forward Synthesis
 
-## News
+<table>
+<tr>
+<td bgcolor="#D6EAF8" width="100%">
 
-We have released **PGFS++** at [https://github.com/bz317/PGFS_plus_plus](https://github.com/bz317/PGFS_plus_plus).
+**News.** We have released **PGFS++** at [https://github.com/bz317/PGFS_plus_plus](https://github.com/bz317/PGFS_plus_plus).
 
-Successful? reproduction of **Policy Gradient for Forward Synthesis (PGFS)** from the paper:
-
-> **Learning to Navigate the Synthetically Accessible Chemical Space Using Reinforcement Learning**  
-> Gottipati et al., 2020 — [arXiv:2004.12485](https://arxiv.org/pdf/2004.12485)
-
-This repo implements the **bimolecular** setup from §4.3, Algorithm 1, and Figure 2 of that paper.
-
-Both shipped configs use the **same paper-style setup** (ECFP state, RLV2 action, kNN k=1, `r2_available` masking for **T_mask**, no Stop, horizon 5) — see [Hyperparameters (§4.3)](#hyperparameters-paper-43). They differ only in the **per-step reward signal** — see [Reward modes](#reward-modes) below.
+</td>
+</tr>
+</table>
 
 ## Contents
 
+- [Overview](#overview)
 - [Performance](#performance)
 - [Workflow](#workflow)
   - [1. Install](#1-install)
@@ -32,6 +30,19 @@ Both shipped configs use the **same paper-style setup** (ECFP state, RLV2 action
   - [Option B — pip only](#option-b--pip-only)
 - [Reference](#reference)
 - [License](#license)
+
+---
+
+## Overview
+
+This repo is a successful? reproduction of **Policy Gradient for Forward Synthesis (PGFS)** from the paper:
+
+> **Learning to Navigate the Synthetically Accessible Chemical Space Using Reinforcement Learning**  
+> Gottipati et al., 2020 — [arXiv:2004.12485](https://arxiv.org/pdf/2004.12485)
+
+This repo implements the **bimolecular** setup from §4.3, Algorithm 1, and Figure 2 of that paper.
+
+Both shipped configs use the **same paper-style setup** (ECFP state, RLV2 action, kNN k=1, `r2_available` masking for **T_mask**, no Stop, horizon 5) — see [Hyperparameters (§4.3)](#hyperparameters-paper-43). They differ only in the **per-step reward signal** — see [Reward modes](#reward-modes) below.
 
 ---
 
