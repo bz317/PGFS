@@ -1,5 +1,9 @@
 # PGFS —  Policy Gradient for Forward Synthesis
 
+## News
+
+We have released **PGFS++** at [https://github.com/bz317/PGFS_plus_plus](https://github.com/bz317/PGFS_plus_plus).
+
 Successful? reproduction of **Policy Gradient for Forward Synthesis (PGFS)** from the paper:
 
 > **Learning to Navigate the Synthetically Accessible Chemical Space Using Reinforcement Learning**  
@@ -11,12 +15,12 @@ Both shipped configs use the **same paper-style setup** (ECFP state, RLV2 action
 
 ## Contents
 
+- [Performance](#performance)
 - [Workflow](#workflow)
   - [1. Install](#1-install)
   - [2. Run](#2-run)
   - [3. Results](#3-results)
 - [Reward modes](#reward-modes)
-- [Training curves](#training-curves)
 - [Internal test evaluation](#internal-test-evaluation)
 - [What this implements](#what-this-implements)
 - [Hyperparameters (paper §4.3)](#hyperparameters-paper-43)
@@ -28,6 +32,18 @@ Both shipped configs use the **same paper-style setup** (ECFP state, RLV2 action
   - [Option B — pip only](#option-b--pip-only)
 - [Reference](#reference)
 - [License](#license)
+
+---
+
+## Performance
+
+<p align="center">
+  <img src="figures/qed_panel.png" width="90%" alt="Performance of PGFS and its variants">
+</p>
+
+<p align="center">
+  <em>Performance of PGFS and its variants.</em>
+</p>
 
 ---
 
@@ -141,40 +157,6 @@ Primary molecule-quality metric: **`eval/mean_final_delta_qed`** (mean QED impro
 | **(2) QED per step** | `reward: qed` | `QED(product_t)` — rewards *absolute* drug-likeness of each intermediate/final product | `configs/paper_style_qed.yaml` |
 
 Override from the CLI: `--reward delta_qed` or `--reward qed`.
-
----
-
-## Training curves
-
-Example **paper-style** runs on the Bi setup (same architecture / hyperparameters as the configs above; logged on [Weights & Biases](https://wandb.ai/boqiaoz-cambridge/GenMolRL_Bi)). Each panel shows **`train/mean_reward`** and **`test/mean_reward`** for one reward mode — the latter is W&B’s `eval/mean_reward` (mean episodic return on the held-out test reactant pool). X-axis is **`train/global_step`** (same as the W&B UI).
-
-| Run | W&B | Reward (per step) | Steps (snapshot) | Train mean reward | Test mean reward |
-|-----|-----|-------------------|------------------|-------------------|------------------|
-| **ΔQED** | [`6ryqkars`](https://wandb.ai/boqiaoz-cambridge/GenMolRL_Bi/runs/6ryqkars) | `QED(product_t) − QED(product_t-1)` | ~350k / 1M | ≈ −0.27 | ≈ −0.22 |
-| **QED** | [`3d7j4vp2`](https://wandb.ai/boqiaoz-cambridge/GenMolRL_Bi/runs/3d7j4vp2) | `QED(product_t)` | ~373k / 1M | ≈ 2.20 | ≈ 2.02 |
-
-**ΔQED per step** (`reward: delta_qed`):
-
-![PGFS ΔQED per step: train and test mean reward](figures/pgfs_delta_qed_curves.png)
-
-**QED per step** (`reward: qed`):
-
-![PGFS QED per step: train and test mean reward](figures/pgfs_qed_curves.png)
-
-**How to read these plots**
-
-- **ΔQED per step** — mean reward is the average *improvement* at each reaction; values are typically small and can be negative when most steps do not increase QED.
-- **QED per step** — mean reward is the average *absolute* QED of products along the trajectory; values are positive (~0.3–0.9 per step) and episode return sums over up to 5 reactions.
-- **Train vs test** — training rollouts sample random building-block starts; test rollouts cycle held-out test reactants. The two reward modes use different scales, so compare train vs test within each panel rather than across panels.
-- **Molecule quality** — for both runs, use **`eval/mean_final_delta_qed`** (endpoint ΔQED), not `mean_reward`, to judge whether molecules actually improved.
-
-Regenerate from W&B (requires `wandb login` or `WANDB_API_KEY`):
-
-```bash
-python scripts/plot_wandb_curves.py   # writes figures/pgfs_*.png and *.csv
-```
-
-The script fetches **train** and **test** metrics separately (W&B merges sparse series incorrectly if requested in one call) and uses `train/global_step` as the x-axis. Train curves are downsampled to 5k points; test curves are logged every eval (≈10k steps) and shown with markers. W&B’s UI may apply additional smoothing on `train/mean_reward`.
 
 ---
 
@@ -309,9 +291,9 @@ PGFS/
 ├── configs/               # paper_style_delta_qed.yaml, paper_style_qed.yaml
 ├── data/Bi/               # bundled reactants + templates (~11 MB)
 ├── scripts/train.py       # CLI entry point
-├── scripts/plot_wandb_curves.py  # regenerate README training curves from W&B
+├── scripts/plot_wandb_curves.py  # optional W&B training-curve plots
 ├── scripts/plot_internal_metrics_violins.py  # QED / diversity / SA violins (README)
-├── figures/               # training curves + internal-test violins (for README)
+├── figures/               # performance panel + internal-test violins (for README)
 ├── run_launcher/          # run_train.sh + HPC/slurm_gpu_paper_style
 ├── runs/                  # checkpoints (created at train time)
 ├── wandb/                 # W&B local files (created at train time)
